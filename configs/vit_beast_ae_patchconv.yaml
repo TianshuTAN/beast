@@ -1,0 +1,72 @@
+# BEAST-AE patch-token bottleneck — Stage 2
+# Loads encoder/decoder weights from a trained BEAST (stage 1) checkpoint,
+# adds a Conv2d channel-reduce over the 196 patch tokens (drops CLS) and
+# Linear(P*H_b, L) bottleneck, fine-tunes end-to-end on pixel MSE.
+#
+# Compresses all 196 patch tokens into a 100-d latent rather than just CLS.
+# Per mentor: Conv2d channel reduction before flatten keeps parameter count
+# manageable while letting every patch contribute.
+model:
+  seed: 0
+  checkpoint: null
+  model_class: vit
+  model_params:
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 12
+    intermediate_size: 3072
+    hidden_act: "gelu"
+    hidden_dropout_prob: 0.0
+    attention_probs_dropout_prob: 0.0
+    initializer_range: 0.02
+    layer_norm_eps: 1.e-12
+    image_size: 224
+    patch_size: 16
+    num_channels: 3
+    qkv_bias: True
+    decoder_num_attention_heads: 16
+    decoder_hidden_size: 512
+    decoder_num_hidden_layers: 8
+    decoder_intermediate_size: 2048
+    mask_ratio: 0          # pure AE — no masking during fine-tune
+    norm_pix_loss: False
+    num_latents: 100
+    bottleneck_type: patch_conv
+    bottleneck_patch_d: 192   # H_b; default would be max(H/4, 64) = 192 for H=768
+
+    embed_size: 768
+    temp_scale: False
+    random_init: False
+    use_infoNCE: False
+    infoNCE_weight: 0.03
+    use_perceptual_loss: False
+    lambda_perceptual: 10.0
+
+    beast_pretrained_ckpt: null   # set via --overrides at launch
+    freeze_backbone: false         # end-to-end fine-tune (option (a))
+
+training:
+  seed: 0
+  imgaug: default
+  train_batch_size: 128
+  val_batch_size: 1024
+  test_batch_size: 128
+  num_epochs: 400
+  num_workers: 8
+  num_gpus: 1
+  num_nodes: 1
+  log_every_n_steps: 10
+  check_val_every_n_epoch: 5
+
+optimizer:
+  type: Adam
+  accumulate_grad_batches: 1
+  lr: 5.e-5
+  wd: 0.05
+  warmup_pct: 0.15
+  gamma: 0.95
+  div_factor: 10
+  scheduler: cosine
+
+data:
+  data_dir: /PATH/TO/DATA

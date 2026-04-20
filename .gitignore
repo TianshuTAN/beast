@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# SLURM job output logs (keep them out of the repo)
+scripts/*.out
+*.out
+
+# Local editor / session artifacts
+*.swp
+.DS_Store
+
 # C extensions
 *.so
 
@@ -184,3 +192,5 @@ app.log
 # data
 data/
 *.png
+# Internal handoff doc — not for public repo
+docs/baseline_handoff.md

@@ -26,13 +26,14 @@ logging.basicConfig(level=logging.INFO)
 
 DYNAMIC_VARS = [
     "wheel-speed",
-    "licks",
     "left-whisker-motion-energy",
     "right-whisker-motion-energy",
     "left-nose-speed",
     "right-nose-speed",
-    "left-paw-speed",
-    "right-paw-speed",
+    "left-camera-left-paw-speed",
+    "left-camera-right-paw-speed",
+    "right-camera-left-paw-speed",
+    "right-camera-right-paw-speed",
 ]
 
 
@@ -144,25 +145,13 @@ def main() -> None:
 
     video_timestamps = Path(args.video_timestamps)
     left_ts_path = video_timestamps / f"_ibl_leftCamera.times.{eid}.npy"
-    right_ts_path = video_timestamps / f"_ibl_rightCamera.times.{eid}.npy"
-    left_timestamps = np.load(left_ts_path) if left_ts_path.is_file() else None
-    right_timestamps = np.load(right_ts_path) if right_ts_path.is_file() else None
-
-    ts_arrays = [a for a in (left_timestamps, right_timestamps) if a is not None]
-    if not ts_arrays:
-        logging.info(
-            "Skip EID %s: missing %s and %s",
-            eid,
-            left_ts_path.name,
-            right_ts_path.name,
-        )
+    if not left_ts_path.is_file():
+        logging.info("Skip EID %s: missing %s", eid, left_ts_path.name)
         sys.exit(0)
-    if len(ts_arrays) == 2 and not np.array_equal(ts_arrays[0], ts_arrays[1]):
-        raise AssertionError("Left and right camera timestamps must be synchronized.")
-    min_timestamp = min(a.min() for a in ts_arrays)
-    max_timestamp = max(a.max() for a in ts_arrays)
-    min_timestamp = int(round(min_timestamp)) + 1
-    max_timestamp = int(round(max_timestamp)) - 1
+    left_timestamps = np.load(left_ts_path)
+
+    min_timestamp = int(round(left_timestamps.min())) + 1
+    max_timestamp = int(round(left_timestamps.max())) - 1
 
     intervals = create_intervals(min_timestamp, max_timestamp, params["interval_len"])
 

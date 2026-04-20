@@ -1,0 +1,75 @@
+# BEAST-AE fine-tune — Stage 2 of two-stage training
+# Loads encoder/decoder weights from a trained BEAST (stage 1) checkpoint,
+# adds the bottleneck (encoder_to_latents / latents_to_decoder) randomly initialized,
+# and fine-tunes with mask_ratio=0.
+model:
+  seed: 0
+  checkpoint: null
+  model_class: vit
+  model_params:
+    hidden_size: 768
+    num_hidden_layers: 12
+    num_attention_heads: 12
+    intermediate_size: 3072
+    hidden_act: "gelu"
+    hidden_dropout_prob: 0.0
+    attention_probs_dropout_prob: 0.0
+    initializer_range: 0.02
+    layer_norm_eps: 1.e-12
+    image_size: 224
+    patch_size: 16
+    num_channels: 3
+    qkv_bias: True
+    decoder_num_attention_heads: 16
+    decoder_hidden_size: 512
+    decoder_num_hidden_layers: 8
+    decoder_intermediate_size: 2048
+    mask_ratio: 0          # pure AE — no masking during fine-tune
+    norm_pix_loss: False
+    num_latents: 100       # bottleneck dim
+    bottleneck_type: cls   # flat | cls | pool | per_token
+
+    embed_size: 768
+    temp_scale: False
+    random_init: False     # ignored when beast_pretrained_ckpt is set
+    use_infoNCE: False
+    infoNCE_weight: 0.03
+    use_perceptual_loss: False
+    lambda_perceptual: 10.0
+
+    # --- Two-stage training options ---
+    # Path to a trained BEAST (stage 1) Lightning checkpoint.
+    # Encoder/decoder weights are loaded; bottleneck layers stay random.
+    beast_pretrained_ckpt: null   # set via --overrides or edit before launch
+    # Whether to freeze the ViT encoder + MAE decoder during fine-tuning,
+    # training only the bottleneck layers.  Set to false to train everything.
+    freeze_backbone: false
+
+# training configuration
+training:
+  seed: 0
+  imgaug: default
+  train_batch_size: 128
+  val_batch_size: 1024
+  test_batch_size: 128
+  num_epochs: 800
+  num_workers: 8
+  num_gpus: 1
+  num_nodes: 1
+  log_every_n_steps: 10
+  check_val_every_n_epoch: 5
+
+# optimizer configuration
+optimizer:
+  type: Adam
+  accumulate_grad_batches: 1
+  lr: 5.e-5
+  wd: 0.05
+  warmup_pct: 0.15
+  gamma: 0.95
+  div_factor: 10
+  scheduler: cosine
+
+# data configuration
+data:
+  data_dir: /PATH/TO/DATA

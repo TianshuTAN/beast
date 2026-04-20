@@ -12,6 +12,8 @@
 . ~/.bashrc
 
 module load ffmpeg
+module load pytorch-conda/2.8
+source /sw/rh9.4/user/python/conda-env/pytorch-2.8-cu128/etc/profile.d/conda.sh
 
 eid=${1}
 one_cache_path=${2}

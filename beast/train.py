@@ -193,7 +193,19 @@ def train(config: dict, model, output_dir: str | Path):
     # train model!
     if rank_zero_only.rank == 0:
         log_step("About to call trainer.fit() - this may hang here if there are issues with data loading or GPU setup", level='debug')
-    trainer.fit(model=model, datamodule=datamodule)
+
+    # auto-resume from latest last.ckpt if present
+    import glob as _glob
+    last_ckpts = sorted(_glob.glob('tb_logs/*/checkpoints/last.ckpt'))
+    resume_ckpt = last_ckpts[-1] if last_ckpts else None
+    if rank_zero_only.rank == 0 and resume_ckpt:
+        log_step(f"Resuming from {resume_ckpt}", level='info')
+
+    # tensor cores: trade precision for ~30% speedup on matmul-heavy ViT
+    import torch as _torch
+    _torch.set_float32_matmul_precision('high')
+
+    trainer.fit(model=model, datamodule=datamodule, ckpt_path=resume_ckpt)
     if rank_zero_only.rank == 0:
         log_step("trainer.fit() completed", level='debug')
 
@@ -225,8 +237,25 @@ def get_callbacks(
             monitor='val_loss',
             mode='min',
             filename='{epoch}-{step}-best',
+            save_last=True,
         )
         callbacks.append(ckpt_best_callback)
+
+    # fail-fast on NaN loss — checked at the first training step so jobs that
+    # would silently degrade (see prior NaN-loss incident with mask_ratio=0)
+    # crash within seconds instead of wasting hours of GPU.
+    class _NanLossAbort(pl.Callback):
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            if trainer.global_step > 5:
+                return
+            loss = outputs.get('loss') if isinstance(outputs, dict) else outputs
+            if loss is not None and torch.is_tensor(loss) and torch.isnan(loss).any():
+                raise RuntimeError(
+                    f"NaN loss detected at global_step={trainer.global_step}. "
+                    "Aborting training to avoid wasted GPU hours."
+                )
+
+    callbacks.append(_NanLossAbort())
 
     if ckpt_every_n_epochs:
         # if ckpt_every_n_epochs is not None, save separate checkpoint files
