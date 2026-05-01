@@ -151,15 +151,15 @@ def plot_neurons_r2(gt, pred, epoch=0, neuron_idx=[],modality="behavior"):
     return fig
 
 def _std(arr):
-    # STD_MODE env var toggles: 'per_feature' (default, new: pool over trials+time)
+    # STD_MODE env var toggles: 'per_feature' (default, pool over trials+time, nan-safe)
     # vs 'per_timebin' (original: per-time-per-feature).
     mode = os.environ.get('STD_MODE', 'per_feature')
     if mode == 'per_timebin':
-        mean = np.mean(arr, axis=0)       # (T, N)
-        std = np.std(arr, axis=0)         # (T, N)
+        mean = np.nanmean(arr, axis=0)       # (T, N)
+        std = np.nanstd(arr, axis=0)         # (T, N)
     else:
-        mean = np.mean(arr, axis=(0, 1))  # (N,)
-        std = np.std(arr, axis=(0, 1))    # (N,)
+        mean = np.nanmean(arr, axis=(0, 1), keepdims=False).reshape(1, -1)  # (1, N)
+        std = np.nanstd(arr, axis=(0, 1), keepdims=False).reshape(1, -1)    # (1, N)
     std = np.clip(std, 1e-8, None)
     arr = (arr - mean) / std
     return arr, mean, std

@@ -37,11 +37,11 @@ model:
 # training configuration
 training:
   seed: 0
-  imgaug: default
-  train_batch_size: 128
+  imgaug: none
+  train_batch_size: 32
   val_batch_size: 1024
-  test_batch_size: 128
-  num_epochs: 800
+  test_batch_size: 32
+  num_epochs: 400
   num_workers: 8
   num_gpus: 1
   num_nodes: 1
