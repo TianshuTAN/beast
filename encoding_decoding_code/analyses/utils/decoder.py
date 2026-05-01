@@ -191,9 +191,7 @@ def train_cnn_decoder(
     annealing_steps=2
     trial_len=1
     anneal_epochs = epochs - 50 * np.arange(1, annealing_steps + 1)
-    # Force CPU — Ray Tune workers hit persistent "CUDA device busy/unavailable"
-    # errors when running decoders with larger latent dims (BEAST-AE 200-d).
-    accelerator = Accelerator(cpu=True)
+    accelerator = Accelerator(cpu=False)
     result = {}
     for eid in data_dict:
         train_X = data_dict[eid]["X"][0]
