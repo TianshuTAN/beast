@@ -24,8 +24,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "encoding_decoding_code"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+for _p in (SRC_ROOT, SCRIPTS_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import h5py
 import numpy as np
@@ -36,6 +38,11 @@ from sklearn.decomposition import PCA
 
 from analyses.utils.decoder import train_cnn_decoder_with_tune
 from beast.models.vits import VisionTransformer
+from decoding_metrics import (
+    _psnr_per_image,
+    _ssim_per_image,
+    save_psnr_ssim_metrics_npz,
+)
 
 # inverse ImageNet normalization for PSNR + image saving
 _IN_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 3, 1, 1)
@@ -89,12 +96,26 @@ def _to_unit_range(imgs: np.ndarray) -> np.ndarray:
     return np.clip(out, 0.0, 1.0)
 
 
-def _psnr(gt: np.ndarray, pred: np.ndarray, axis_per_frame: tuple[int, ...]) -> np.ndarray:
-    """PSNR per frame between gt and pred, both in [0, 1]. Reduce MSE along axis_per_frame."""
-    mse = ((gt - pred) ** 2).mean(axis=axis_per_frame)
-    eps = 1e-12
-    psnr = 10.0 * np.log10(1.0 / np.maximum(mse, eps))
-    return psnr
+def _resize_to_320(imgs_unit: np.ndarray) -> np.ndarray:
+    """(..., 3, H, W) [0,1] -> (..., 3, 320, 320) via PIL BICUBIC (uint8 round-trip)."""
+    orig = imgs_unit.shape
+    flat = imgs_unit.reshape(-1, 3, orig[-2], orig[-1])
+    out = np.empty((flat.shape[0], 3, 320, 320), dtype=np.float32)
+    for i in range(flat.shape[0]):
+        u8 = (flat[i].transpose(1, 2, 0) * 255.0).round().clip(0, 255).astype(np.uint8)
+        pil = Image.fromarray(u8).resize((320, 320), Image.Resampling.BICUBIC)
+        out[i] = np.asarray(pil).astype(np.float32).transpose(2, 0, 1) / 255.0
+    return out.reshape(*orig[:-2], 320, 320)
+
+
+def _batched_metric(metric_fn, pred_t: torch.Tensor, gt_t: torch.Tensor,
+                    *, batch_size: int = 32) -> torch.Tensor:
+    """Run metric_fn(pred_chunk, gt_chunk, data_range=1.0) over chunks of B."""
+    chunks = []
+    for i in range(0, pred_t.shape[0], batch_size):
+        m = metric_fn(pred_t[i:i + batch_size], gt_t[i:i + batch_size], data_range=1.0)
+        chunks.append(m.detach().cpu())
+    return torch.cat(chunks, dim=0)
 
 
 def _save_pngs(imgs: np.ndarray, out_dir: Path, prefix: str) -> None:
@@ -250,20 +271,59 @@ def main() -> None:
     pred_imgs = _decode_to_images(model, Z_pred, ids_test, device, args.decode_batch_size)
     print(f"    pred_imgs {pred_imgs.shape}")
 
-    # ── Phase 7: PSNR per frame ─────────────────────────────────────────────
-    print("\n[7] PSNR per frame")
-    gt_unit = _to_unit_range(gt_imgs)
+    # ── Phase 7: canonical PSNR + SSIM (resize to 320, data_range=1.0) ─────
+    print("\n[7] Canonical PSNR + SSIM (320×320 BICUBIC, data_range=1.0)")
+    gt_unit = _to_unit_range(gt_imgs)        # (K, T, 3, 224, 224) [0,1]
     pred_unit = _to_unit_range(pred_imgs)
-    psnr_per_frame = _psnr(gt_unit, pred_unit, axis_per_frame=(2, 3, 4))  # over (3, H, W)
-    psnr_mean = float(psnr_per_frame.mean())
-    psnr_std = float(psnr_per_frame.std())
+    print("  resize 224 → 320 (PIL BICUBIC, uint8 round-trip)...")
+    gt_320 = _resize_to_320(gt_unit)         # (K, T, 3, 320, 320)
+    pred_320 = _resize_to_320(pred_unit)
+    print(f"  gt_320 {gt_320.shape}  pred_320 {pred_320.shape}")
+
+    # Metric expects (B, V, C, H, W). Single-cam pipeline → V=1.
+    gt_t = torch.from_numpy(gt_320).reshape(n_test * T, 1, 3, 320, 320)
+    pred_t = torch.from_numpy(pred_320).reshape(n_test * T, 1, 3, 320, 320).clamp_(0, 1)
+    if device.type == "cuda":
+        gt_t = gt_t.to(device, non_blocking=True)
+        pred_t = pred_t.to(device, non_blocking=True)
+
+    psnr_flat = _batched_metric(_psnr_per_image, pred_t, gt_t, batch_size=32)   # (K*T, 1)
+    ssim_flat = _batched_metric(_ssim_per_image, pred_t, gt_t, batch_size=32)   # (K*T, 1)
+    psnr_KTV = psnr_flat.numpy().reshape(n_test, T, 1).astype(np.float32)
+    ssim_KTV = ssim_flat.numpy().reshape(n_test, T, 1).astype(np.float32)
+    psnr_per_frame = psnr_KTV[..., 0]   # (K, T) for downstream best-trial pick
+    ssim_per_frame = ssim_KTV[..., 0]
+
+    psnr_mean = float(np.nanmean(psnr_per_frame))
+    psnr_std  = float(np.nanstd(psnr_per_frame))
+    ssim_mean = float(np.nanmean(ssim_per_frame))
+    ssim_std  = float(np.nanstd(ssim_per_frame))
     print(f"  PSNR mean={psnr_mean:.3f} dB, std={psnr_std:.3f} dB over {psnr_per_frame.size} frames")
+    print(f"  SSIM mean={ssim_mean:.4f},     std={ssim_std:.4f}")
+
+    # legacy psnr.npz (kept for backwards compat with existing tooling)
     np.savez(
         out / "psnr.npz",
         per_frame=psnr_per_frame.astype(np.float32),
         mean=psnr_mean, std=psnr_std,
         eid=args.eid,
     )
+
+    # canonical metrics NPZ — schema in scripts/decoding_metrics.py
+    cam_label = "left"
+    if "right" in str(Path(args.latents_h5).name).lower():
+        cam_label = "right"
+    save_psnr_ssim_metrics_npz(
+        out / "psnr_ssim_metrics.npz",
+        psnr_blocks=[psnr_KTV],
+        ssim_blocks=[ssim_KTV],
+        neural_trial_blocks=[np.arange(n_test, dtype=np.int64)],
+        neural_bin_blocks=[np.tile(np.arange(T, dtype=np.int64), (n_test, 1))],
+        trial_split_blocks=[np.full((n_test,), "test", dtype=str)],
+        source_file_rows=[str(args.neural_npz)] * n_test,
+        view_names=(cam_label,),
+    )
+    print(f"  wrote {out / 'psnr_ssim_metrics.npz'}")
 
     # ── Phase 8: save 5 random + 5 best test trials ─────────────────────────
     print("\n[8] Saving visualization PNGs (5 random + 5 best test trials)")
@@ -293,6 +353,11 @@ def main() -> None:
         "tcn_test_r2": float(r2),
         "psnr_mean": psnr_mean,
         "psnr_std": psnr_std,
+        "ssim_mean": ssim_mean,
+        "ssim_std": ssim_std,
+        "metric_resize_to": 320,
+        "metric_resize_method": "PIL.Image.Resampling.BICUBIC",
+        "metric_data_range": 1.0,
         "vis_random_trials": rand_idx,
         "vis_best_trials": best_idx,
     }
