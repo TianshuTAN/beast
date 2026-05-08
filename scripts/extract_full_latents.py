@@ -122,10 +122,21 @@ def _run_split(
         batch = batch.to(device, non_blocking=True)
         # call ViT directly so we can also grab ids_restore
         outputs = model.vit_mae.vit(pixel_values=batch)
-        # last_hidden_state: (B, 197, 768) — CLS at position 0, then 196 patches in shuffled order
-        # ids_restore:      (B, 196)      — inverse permutation to put patches back to spatial order
-        lat_chunks.append(outputs.last_hidden_state.cpu().numpy().astype(np.float32))
-        ids_chunks.append(outputs.ids_restore.cpu().numpy().astype(np.int64))
+        lat_full = outputs.last_hidden_state         # (B, 197, 768) CLS + 196 SHUFFLED patches
+        ids_restore = outputs.ids_restore            # (B, 196) inverse permutation
+
+        # HF ViTMAE shuffles patches even at mask_ratio=0. Save tokens in canonical
+        # spatial order so downstream PCA/TCN see consistent positional structure.
+        cls = lat_full[:, 0:1, :]
+        patches_shuffled = lat_full[:, 1:, :]
+        idx = ids_restore.unsqueeze(-1).expand(-1, -1, patches_shuffled.size(-1))
+        patches_spatial = torch.gather(patches_shuffled, dim=1, index=idx)
+        lat_canonical = torch.cat([cls, patches_spatial], dim=1)   # (B, 197, 768) spatial order
+        # Identity ids_restore so the decoder's internal gather is a noop.
+        ids_identity = torch.arange(196, device=lat_full.device).unsqueeze(0).expand(lat_full.size(0), -1)
+
+        lat_chunks.append(lat_canonical.cpu().numpy().astype(np.float32))
+        ids_chunks.append(ids_identity.cpu().numpy().astype(np.int64))
         n_done += batch.size(0)
         if n_done % (batch_size * 20) == 0:
             print(f"    {n_done} / {len(paths)} frames")
