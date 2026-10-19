@@ -6,12 +6,17 @@ from typing import Callable
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
 from torchvision import transforms
 from typeguard import typechecked
 
 from beast import log_step
 from beast.data.types import ExampleDict
+
+# Some frames in MM008_frames_joint_sampled are slightly truncated PNGs (cv2 seek-write
+# from the right-camera extractor occasionally produced short files). Tell PIL to fill
+# missing trailing bytes with zeros instead of raising OSError("image file is truncated").
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
